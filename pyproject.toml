@@ -1,0 +1,17 @@
+[project]
+name = "qc-dashboard"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "google-auth>=2.42.1",
+    "gspread>=6.2.1",
+    "jdatetime>=5.2.0",
+    "mysql-connector-python>=9.5.0",
+    "pandas>=2.3.3",
+    "plotly>=6.4.0",
+    "pymysql>=1.1.2",
+    "sqlalchemy>=2.0.44",
+    "streamlit>=1.51.0",
+]
