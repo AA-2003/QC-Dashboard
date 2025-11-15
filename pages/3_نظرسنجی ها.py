@@ -186,61 +186,38 @@ WHERE
         with st.expander("نمایش داده‌های خام نظرسنجی‌ها"):
             st.dataframe(surveys_df.sort_values(by='timestamp', ascending=False).reset_index(drop=True))
 
-def load_qc_manager():
-    st.write("QC Manager content goes here.")
-
-    #  filters
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
-    with col3:
-        team = st.selectbox("تیم", options=st.session_state.users['team']
-                            .apply(lambda x: x.split('|')).explode().unique().tolist())
-    with col4:
-        shift = st.selectbox("شیفت", options=['همه'] + [x for x in st.session_state.users['shift'
-                                        ].apply(lambda x: x.split('|')).explode().unique().tolist() if x != '-'])
-    with col5:
-        expert = st.selectbox("کارشناس", options=["همه"] + st.session_state.users[
-            st.session_state.users['role'].str.contains('expert')
-        ]['name'].tolist())
-
-    
 def load_team_manager():
     st.write("Team Manager content goes here.")
-    manager_teams = [x.strip() for x in st.session_state.userdata['team'].split('|')]
 
-    manager_members = st.session_state.users[
-        st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    ]['name'].unique().tolist()
+    # manager_teams = [x.strip() for x in st.session_state.userdata['team'].split('|')]
 
-    shifts = st.session_state.users[
-        st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    ]['shift'].apply(lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist()
+    # manager_members = st.session_state.users[
+    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
+    # ]['name'].unique().tolist()
+
+    # shifts = st.session_state.users[
+    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
+    # ]['shift'].apply(lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist()
 
 
-    #  filters
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
-    with col3:
-        team = st.selectbox("تیم", options=['all'] + manager_teams)
-    with col4:
-        shift = st.selectbox("شیفت", options=['all'] + shifts)
-    with col5:
-        expert = st.selectbox("کارشناس", options=["all"] + manager_members)
+    # #  filters
+    # col1, col2, col3, col4, col5 = st.columns(5)
+    # with col1:
+    #     start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
+    # with col2:
+    #     end_date = st.date_input("End date", value=pd.to_datetime("today"))
+    # with col3:
+    #     team = st.selectbox("تیم", options=['All'] + manager_teams)
+    # with col4:
+    #     shift = st.selectbox("شیفت", options=['All'] + shifts)
+    # with col5:
+    #     expert = st.selectbox("کارشناس", options=["All"] + manager_members)
+
+
+def load_supervisor():
+    st.write("Supervisor content goes here.")
 
 def load_expert():
     st.write("Expert content goes here.")
-
-        #  filters
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
 
 main()  

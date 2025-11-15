@@ -67,7 +67,7 @@ def authenticate_google_sheets() -> Optional[gspread.Client]:
         
         if not google_creds_object:
             logger.error("'GOOGLE_CREDENTIALS_JSON' not found in Streamlit secrets")
-            st.error("Google credentials not configured. Please contact administrator.")
+            st.error("Google credentials not configure``d. Please contact administrator.")
             st.stop()
             return None
         

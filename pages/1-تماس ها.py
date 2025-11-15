@@ -1,4 +1,3 @@
-from multiprocessing import queues
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -13,7 +12,6 @@ CONFIG = {
     "queues": ["5100", "5200", "5300", '5600'],
 }
 
-
 @st.cache_data(ttl=600, show_spinner=False)
 def execute_query(query_formatted, engine_string) -> pd.DataFrame:
     """Execute a SQL query and return the result as a DataFrame."""
@@ -24,7 +22,6 @@ def execute_query(query_formatted, engine_string) -> pd.DataFrame:
         print(f"Error executing query: {e}")
         log_event(user=st.session_state.userdata['name'], event_type='error', message=f"Error executing query: {e}\nQuery: {query_formatted}")
         return pd.DataFrame()  # Return an empty DataFrame on error
-
 
 def main():
     """
@@ -46,10 +43,11 @@ def main():
     else:
         role = st.session_state.userdata['role']
         switcher = {
-            'admin': load_admin,
-            'qc': load_admin,
-            'team manger': load_team_manager,
-            'expert': load_expert
+            'Admin': load_admin,
+            'QC': load_admin,
+            'Team Manager': load_team_manager,
+            'Supervisor': load_supervisor,
+            'Expert': load_expert
         }
         # Get the function from switcher dictionary
         func = switcher.get(role, lambda: st.error("نقش کاربری نامعتبر است."))
@@ -60,14 +58,12 @@ def load_admin():
     """Load admin specific content."""
 
     teams = list(set(st.session_state.users['team'].apply(
-        lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist() + ['all']))
+        lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist() + ['All']))
     shifts = list(set(st.session_state.users['shift'].apply(
-        lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist() + ['all']))
+        lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist() + ['All']))
     experts = list(set(st.session_state.users[
         st.session_state.users['role'].str.contains('Expert|Supervisor')
-    ]['name'].tolist() + ['all']))
-
-    
+    ]['name'].tolist() + ['All']))
 
     with st.form("filter_form"):
         #  filters
@@ -77,11 +73,11 @@ def load_admin():
         with col2:
             end_date = st.date_input("End date", value=pd.to_datetime("today"))
         with col3:
-            team = st.selectbox("تیم", options=teams, index=teams.index('all'))
+            team = st.selectbox("تیم", options=teams, index=teams.index('All'))
         with col4:
-            shift = st.selectbox("شیفت", options=shifts, index=shifts.index('all'))
+            shift = st.selectbox("شیفت", options=shifts, index=shifts.index('All'))
         with col5:
-            expert = st.selectbox("کارشناس", options=experts, index=experts.index('all'))
+            expert = st.selectbox("کارشناس", options=experts, index=experts.index('All'))
 
         submitted = st.form_submit_button("اعمال فیلترها")
 
@@ -91,15 +87,15 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
         
         # apply filters
         filtered_members = st.session_state.users.copy()
-        if team != 'all':
+        if team != 'All':
             filtered_members = filtered_members[
                 filtered_members['team'] == team
             ]
-        if shift != 'all':
+        if shift != 'All':
             filtered_members = filtered_members[
                 filtered_members['shift'].apply(lambda x: shift in [y.strip() for y in x.split('|')])
             ]
-        if expert != 'all':
+        if expert != 'All':
             filtered_members = filtered_members[
                 filtered_members['name'] == expert
             ]
@@ -148,7 +144,6 @@ WHERE
         engine_string = f"mysql+pymysql://{st.secrets['VOIP_DB']['user']}:{st.secrets['VOIP_DB']['password']}@{st.secrets['VOIP_DB']['host']}/{st.secrets['VOIP_DB']['database']}"
         calls_df = execute_query(query_formatted, engine_string)
 
-
         # plotting
         if calls_df.empty:
             st.warning("هیچ داده‌ای برای نمایش وجود ندارد با فیلترهای انتخاب شده.")
@@ -165,7 +160,7 @@ WHERE
 
         fig = px.line(
             call_counts_agg, x=call_counts_agg.index,
-            y='total_calls', title='تعداد تماس‌های یکتا در روز',
+            y='total_calls', title='تعداد تماس‌ها در روز',
             markers=True, 
             line_shape='spline',
             template='plotly_white'
@@ -183,9 +178,9 @@ WHERE
         with st.expander("جزئیات تماس ها"):
             st.dataframe(calls_df.sort_values(by='time', ascending=False))
 
-        # ==========================
-        # = avg duration to answer =
-        # ==========================
+        # ============================
+        # == avg duration to answer ==
+        # ============================
 
         st.header("مدت زمان متوسط پاسخگویی برای هر کارشناس")
 
@@ -246,71 +241,41 @@ WHERE
             avg_talking_duration_seconds=('talking_duration_seconds', 'mean'),
             total_answered_calls=('callid', 'nunique')
         ).reset_index().sort_values(by='avg_talking_duration_seconds').reset_index(drop=True))
-
-
-        # ==========================
-        # ======== survays =========
-        # ==========================
-
-
-
-
-def load_qc_manager():
-    st.write("QC Manager content goes here.")
-
-    #  filters
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
-    with col3:
-        team = st.selectbox("تیم", options=st.session_state.users['team']
-                            .apply(lambda x: x.split('|')).explode().unique().tolist())
-    with col4:
-        shift = st.selectbox("شیفت", options=['همه'] + [x for x in st.session_state.users['shift'
-                                        ].apply(lambda x: x.split('|')).explode().unique().tolist() if x != '-'])
-    with col5:
-        expert = st.selectbox("کارشناس", options=["همه"] + st.session_state.users[
-            st.session_state.users['role'].str.contains('expert')
-        ]['name'].tolist())
-
     
 def load_team_manager():
     st.write("Team Manager content goes here.")
 
-    manager_teams = [x.strip() for x in st.session_state.userdata['team'].split('|')]
+    # manager_teams = [x.strip() for x in st.session_state.userdata['team'].split('|')]
 
-    manager_members = st.session_state.users[
-        st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    ]['name'].unique().tolist()
+    # manager_members = st.session_state.users[
+    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
+    # ]['name'].unique().tolist()
 
-    shifts = st.session_state.users[
-        st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    ]['shift'].apply(lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist()
+    # shifts = st.session_state.users[
+    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
+    # ]['shift'].apply(lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist()
 
 
-    #  filters
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
-    with col3:
-        team = st.selectbox("تیم", options=['all'] + manager_teams)
-    with col4:
-        shift = st.selectbox("شیفت", options=['all'] + shifts)
-    with col5:
-        expert = st.selectbox("کارشناس", options=["all"] + manager_members)
+    # #  filters
+    # col1, col2, col3, col4, col5 = st.columns(5)
+    # with col1:
+    #     start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
+    # with col2:
+    #     end_date = st.date_input("End date", value=pd.to_datetime("today"))
+    # with col3:
+    #     team = st.selectbox("تیم", options=['All'] + manager_teams)
+    # with col4:
+    #     shift = st.selectbox("شیفت", options=['All'] + shifts)
+    # with col5:
+    #     expert = st.selectbox("کارشناس", options=["All"] + manager_members)
+
+
+def load_supervisor():
+    st.write("Supervisor content goes here.")
 
 def load_expert():
     st.write("Expert content goes here.")
 
-        #  filters
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
 
-main()  
+
+main()

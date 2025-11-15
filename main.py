@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 
 from utils.customCss import apply_custom_css
 from utils.sheetConnect import load_sheet
@@ -17,16 +16,16 @@ def main():
     apply_custom_css()
     st.title("داشبورد QC")
 
+    # extract users
+    if 'users' not in st.session_state:
+        users = load_sheet(key='MAIN_SPREADSHEET_ID', sheet_name='Users')
+        st.session_state.users = users
+
     # extract internal numbers
     if 'internal_numbers' not in st.session_state:
         internal_numbers_df = load_sheet(key='INTERNAL NUMBERS', sheet_name='Numbers')
         internal_numbers = [preprocess_internal_number(num) for num in internal_numbers_df['Number'].tolist()]
         st.session_state.internal_numbers = internal_numbers
-
-    # extract users
-    if 'users' not in st.session_state:
-        users = load_sheet(key='MAIN_SPREADSHEET_ID', sheet_name='Users')
-        st.session_state.users = users
     
     render_sidebar()
 

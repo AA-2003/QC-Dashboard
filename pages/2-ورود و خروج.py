@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+from sqlalchemy import create_engine
 
 from utils.customCss import apply_custom_css
 from utils.sidebar import render_sidebar
@@ -15,18 +15,15 @@ CONFIG = {
 }
 
 @st.cache_data(ttl=600, show_spinner=False)
-def execute_query(query: str, queues: list, start_date: pd.Timestamp, end_date: pd.Timestamp, internal_numbers_voip: tuple, filtered_members_voip_: tuple) -> pd.DataFrame:
+def execute_query(query_formatted, engine_string) -> pd.DataFrame:
     """Execute a SQL query and return the result as a DataFrame."""
-
-    with voip_conn as conn:
-        query_formatted = query.format(
-            queues=tuple(queues),
-            start_date=start_date,
-            end_date=end_date,
-            internal_numbers_voip=tuple(internal_numbers_voip),
-            filtered_members_voip_=tuple(filtered_members_voip_),
-        )
-        return pd.read_sql_query(query_formatted, conn)
+    try:
+        engine = create_engine(engine_string)
+        return pd.read_sql_query(query_formatted, engine)
+    except Exception as e:
+        print(f"Error executing query: {e}")
+        log_event(user=st.session_state.userdata['name'], event_type='error', message=f"Error executing query: {e}\nQuery: {query_formatted}")
+        return pd.DataFrame()  # Return an empty DataFrame on error
 
 def main():
     """
@@ -48,10 +45,11 @@ def main():
     else:
         role = st.session_state.userdata['role']
         switcher = {
-            'admin': load_admin,
-            'qc': load_admin,
-            'team manger': load_team_manager,
-            'expert': load_expert
+            'Admin': load_admin,
+            'QC': load_admin,
+            'Team Manager': load_team_manager,
+            'Supervisor': load_supervisor,
+            'Expert': load_expert
         }
         # Get the function from switcher dictionary
         func = switcher.get(role, lambda: st.error("نقش کاربری نامعتبر است."))
@@ -62,28 +60,26 @@ def load_admin():
     """Load admin specific content."""
 
     teams = list(set(st.session_state.users['team'].apply(
-        lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist() + ['all']))
+        lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist() + ['All']))
     shifts = list(set(st.session_state.users['shift'].apply(
-        lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist() + ['all']))
+        lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist() + ['All']))
     experts = list(set(st.session_state.users[
         st.session_state.users['role'].str.contains('Expert|Supervisor')
-    ]['name'].tolist() + ['all']))
-
-    
+    ]['name'].tolist() + ['All']))
 
     with st.form("filter_form"):
         #  filters
         col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
-            start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=7))
+            start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=0))
         with col2:
             end_date = st.date_input("End date", value=pd.to_datetime("today"))
         with col3:
-            team = st.selectbox("تیم", options=teams, index=teams.index('all'))
+            team = st.selectbox("تیم", options=teams, index=teams.index('All'))
         with col4:
-            shift = st.selectbox("شیفت", options=shifts, index=shifts.index('all'))
+            shift = st.selectbox("شیفت", options=shifts, index=shifts.index('All'))
         with col5:
-            expert = st.selectbox("کارشناس", options=experts, index=experts.index('all'))
+            expert = st.selectbox("کارشناس", options=experts, index=experts.index('All'))
 
         submitted = st.form_submit_button("اعمال فیلترها")
 
@@ -93,15 +89,15 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
         
         # apply filters
         filtered_members = st.session_state.users.copy()
-        if team != 'all':
+        if team != 'All':
             filtered_members = filtered_members[
                 filtered_members['team'].apply(lambda x: team in [y.strip() for y in x.split('|')])
             ]
-        if shift != 'all':
+        if shift != 'All':
             filtered_members = filtered_members[
                 filtered_members['shift'].apply(lambda x: shift in [y.strip() for y in x.split('|')])
             ]
-        if expert != 'all':
+        if expert != 'All':
             filtered_members = filtered_members[
                 filtered_members['name'] == expert
             ]
@@ -121,13 +117,11 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
         voip_ids_map = [
             f'Local/{voip_id}@from-queue' for voip_id in voip_ids
         ]
-        if len(voip_ids_map) == 1:
-            voip_ids_map = str(voip_ids_map[0])
-        st.write(voip_ids_map)
-         # query    
+
+        # query    
         login_logout_query = """
         SELECT
-            time, agent, event 
+            time, agent, event, queuename 
         FROM queue_log
         WHERE agent IN {filtered_members_voip_}
             AND queuename IN {queues}
@@ -135,121 +129,123 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
             AND (event = 'ADDMEMBER' OR event = 'REMOVEMEMBER')
         """
 
-        login_logout_df = execute_query(
-            login_logout_query,
-            CONFIG['queues'],
-            start_date,
-            end_date,
-            internal_numbers_voip,
-            filtered_members_voip_=voip_ids_map
+        query_formatted = login_logout_query.format(
+            queues=tuple(CONFIG['queues']),
+            start_date=start_date,
+            end_date=end_date,
+            internal_numbers_voip=tuple(internal_numbers_voip),
+            filtered_members_voip_=tuple(voip_ids_map) if len(voip_ids_map) > 1 else f"('{voip_ids_map[0]}')",
         )
 
+        engine_string = f"mysql+pymysql://{st.secrets['VOIP_DB']['user']}:{st.secrets['VOIP_DB']['password']}@{st.secrets['VOIP_DB']['host']}/{st.secrets['VOIP_DB']['database']}"
+        login_logout_df = execute_query(query_formatted, engine_string)
+
         with st.expander("ورود و خروج کارشناسان"):
-            for voip_id in login_logout_df['agent'].unique():
+            for voip_id in login_logout_df.sort_values(by='time', ascending=False)['agent'].unique():
                 member_name = filtered_members[
                     filtered_members['voip_id'].apply(lambda x: voip_id.replace('Local/', '').replace('@from-queue', '') in [y.strip() for y in str(x).split('|')])
                 ]['name'].values
                 if member_name.size > 0:
                     st.subheader(f"کارشناس: {member_name[0]} ({voip_id.replace('Local/', '').replace('@from-queue', '')})")
                 member_events = login_logout_df[login_logout_df['agent'] == voip_id].sort_values(by='time', ascending=False).reset_index(drop=True)
-                st.dataframe(member_events)
+                st.dataframe(member_events.sort_values(by='time', ascending=False).reset_index(drop=True))
 
-        # convert rate 
-        # query = """
-        # SELECT
-        #     callid, time, data2 as phone_number, agent, event,
+        # =======================
+        # === experts in line ===
+        # =======================
+        st.subheader("کارشناسان در خط")
+        if login_logout_df.empty:
+            st.warning("هیچ داده‌ای  با فیلترهای انتخاب شده برای نمایش ورود و خروج کارشناسان وجود ندارد.")
+            return
+        
+        in_line_experts = set()
 
-        #     CAST(time AS DATE) AS call_date,
+        login_logout_df['time'] = pd.to_datetime(login_logout_df['time'])
+        today_login_logouts = login_logout_df[
+            login_logout_df['time'].dt.date == pd.to_datetime("today").date()
+        ]
 
-        #     -- shift
-        #     CASE
-        #         WHEN EXTRACT(HOUR FROM time) BETWEEN 8  AND 16 THEN 'Morning Shift'   -- 08:00–16:59
-        #         WHEN EXTRACT(HOUR FROM time) BETWEEN 17 AND 23 THEN 'Night Shift'     -- 17:00–23:59    
-        #         ELSE
-        #         'Midnight Shift'                                             -- 00:00–07:59
-        #         END AS shift,
-        #     -- team
-        #     CASE 
-        #         WHEN queuename = '5100' THEN 'sales'
-        #         WHEN queuename = '5200' THEN 'support'
-        #         ELSE 'others'
-        #     END AS team,
+        for voip_id in today_login_logouts['agent'].unique():
+            member_name = filtered_members[
+                filtered_members['voip_id'].apply(lambda x: voip_id.replace('Local/', '').replace('@from-queue', '') in [y.strip() for y in str(x).split('|')])
+            ]['name'].values
+            
+            if member_name.size > 0:
+                member_events = login_logout_df[login_logout_df['agent'] == voip_id].sort_values(by='time', ascending=False).reset_index(drop=True)
+                if not member_events.empty and member_events.iloc[0]['event'] == 'ADDMEMBER':
+                    in_line_experts.add(f"{member_name[0]} ({voip_id.replace('Local/', '').replace('@from-queue', '')})")
 
-        #     COUNT(DISTINCT data2) AS unique_calls
-        # FROM queue_log
-        # WHERE
-        #     DATE(time) BETWEEN '{start_date}' AND '{end_date}'
-        #     AND (queuename = '5100' OR queuename = '5200')
-        #     AND callid NOT IN(
-        #         SELECT callid FROM queue_log
-        #         WHERE data IN {internal_numbers_voip}
-        #     )
-        # """
-        # if team != 'all' or shift != 'all' or expert != 'all':
-        #     query += """AND agent IN {filtered_members_voip_}"""
+        for expert in in_line_experts:
+            st.write(expert)
 
-        # calls_df = execute_query(query, start_date, end_date, internal_numbers_voip, filtered_members_voip_)
-        # st.dataframe(calls_df)
+        # ===========================
+        # === out time per expert ===
+        # ===========================
+
+        st.subheader("مدت زمان خارج از خط هر کارشناس")
+
+        for voip_id in login_logout_df['agent'].unique():
+            member_name = filtered_members[
+                filtered_members['voip_id'].apply(lambda x: voip_id.replace('Local/', '').replace('@from-queue', '') in [y.strip() for y in str(x).split('|')])
+            ]['name'].values
+            
+            if member_name.size > 0:
+                member_events = login_logout_df[login_logout_df['agent'] == voip_id].sort_values(by='time').reset_index(drop=True)
+                total_out_time = pd.Timedelta(0)
+                # check each queue name seperately
+                for queuename in member_events['queuename'].unique():
+                    queuename_events = member_events[member_events['queuename'] == queuename].reset_index(drop=True).sort_values(by='time')
+                    for i in range(len(queuename_events)):
+                        if queuename_events.iloc[i]['event'] == 'REMOVEMEMBER':
+                            out_time = queuename_events.iloc[i]['time']
+                            # Find the next ADDMEMBER event
+                            in_time = None
+                            for j in range(i+1, len(queuename_events)):
+                                if queuename_events.iloc[j]['event'] == 'ADDMEMBER':
+                                    in_time = queuename_events.iloc[j]['time']
+                                    break
+                            if in_time is None:
+                                in_time = pd.to_datetime("today")
+                            # less than 4 hours check
+                            if (in_time - out_time) < pd.Timedelta(hours=4): 
+                                total_out_time += (in_time - out_time)
+                st.write(f"کارشناس: {member_name[0]} ({voip_id.replace('Local/', '').replace('@from-queue', '')}) - زمان خارج از خط: {total_out_time}")
 
 
-
-
-def load_qc_manager():
-    st.write("QC Manager content goes here.")
-
-    #  filters
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
-    with col3:
-        team = st.selectbox("تیم", options=st.session_state.users['team']
-                            .apply(lambda x: x.split('|')).explode().unique().tolist())
-    with col4:
-        shift = st.selectbox("شیفت", options=['همه'] + [x for x in st.session_state.users['shift'
-                                        ].apply(lambda x: x.split('|')).explode().unique().tolist() if x != '-'])
-    with col5:
-        expert = st.selectbox("کارشناس", options=["همه"] + st.session_state.users[
-            st.session_state.users['role'].str.contains('expert')
-        ]['name'].tolist())
-
-    
+        # ==========================
+        # ===== 
 def load_team_manager():
     st.write("Team Manager content goes here.")
 
-    manager_teams = [x.strip() for x in st.session_state.userdata['team'].split('|')]
+    # manager_teams = [x.strip() for x in st.session_state.userdata['team'].split('|')]
 
-    manager_members = st.session_state.users[
-        st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    ]['name'].unique().tolist()
+    # manager_members = st.session_state.users[
+    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
+    # ]['name'].unique().tolist()
 
-    shifts = st.session_state.users[
-        st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    ]['shift'].apply(lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist()
+    # shifts = st.session_state.users[
+    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
+    # ]['shift'].apply(lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist()
 
 
-    #  filters
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
-    with col3:
-        team = st.selectbox("تیم", options=['all'] + manager_teams)
-    with col4:
-        shift = st.selectbox("شیفت", options=['all'] + shifts)
-    with col5:
-        expert = st.selectbox("کارشناس", options=["all"] + manager_members)
+    # #  filters
+    # col1, col2, col3, col4, col5 = st.columns(5)
+    # with col1:
+    #     start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
+    # with col2:
+    #     end_date = st.date_input("End date", value=pd.to_datetime("today"))
+    # with col3:
+    #     team = st.selectbox("تیم", options=['All'] + manager_teams)
+    # with col4:
+    #     shift = st.selectbox("شیفت", options=['All'] + shifts)
+    # with col5:
+    #     expert = st.selectbox("کارشناس", options=["All"] + manager_members)
+
+
+def load_supervisor():
+    st.write("Supervisor content goes here.")
 
 def load_expert():
     st.write("Expert content goes here.")
-
-        #  filters
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    with col2:
-        end_date = st.date_input("End date", value=pd.to_datetime("today"))
 
 main()  
