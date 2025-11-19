@@ -111,12 +111,12 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
         
         internal_numbers_voip = st.session_state.internal_numbers
 
+        if len(filtered_members_voip_) == 1:
+            filtered_members_voip_ = str(list(filtered_members_voip_)[0])
+        
         # ========================== 
         # ====call count per day====
         # ==========================
-        
-        if len(filtered_members_voip_) == 1:
-            filtered_members_voip_ = str(list(filtered_members_voip_)[0])
         
         # query
         query = """
@@ -130,7 +130,7 @@ WHERE
         SELECT DISTINCT(callid) FROM queue_log
         WHERE data2 not IN {internal_numbers_voip}
         AND agent IN {filtered_members_voip_}
-        AND event not IN ('DID', '', '', '')
+        AND event not IN ('DID', '')
     )
         """
         query_formatted = query.format(
@@ -148,11 +148,17 @@ WHERE
         if calls_df.empty:
             st.warning("هیچ داده‌ای برای نمایش وجود ندارد با فیلترهای انتخاب شده.")
             return
-        
+                
         calls_df['call_date'] = pd.to_datetime(calls_df['time']).dt.date
         call_counts_agg = calls_df[calls_df['event'] == 'ENTERQUEUE'].groupby(
             ['call_date']).agg(total_calls=('phone_number', 'nunique')).reset_index()
         call_counts_agg = call_counts_agg.set_index('call_date')
+
+        cols = st.columns(2)
+        with cols[0]:
+            st.metric("تعداد کل تماس‌ها", call_counts_agg['total_calls'].sum())
+        with cols[1]:
+            st.metric("میانگین تماس‌ها در روز", round(call_counts_agg['total_calls'].mean(), 2))
 
         all_dates = pd.date_range(start=start_date, end=end_date)
         call_counts_agg = call_counts_agg.reindex(all_dates, fill_value=0)
@@ -177,6 +183,8 @@ WHERE
         
         with st.expander("جزئیات تماس ها"):
             st.dataframe(calls_df.sort_values(by='time', ascending=False))
+        
+        # st.write(calls_df['event'].unique())
 
         # ============================
         # == avg duration to answer ==
@@ -240,35 +248,70 @@ WHERE
         st.dataframe(avg_talking_df_final.groupby('agent').agg(
             avg_talking_duration_seconds=('talking_duration_seconds', 'mean'),
             total_answered_calls=('callid', 'nunique')
-        ).reset_index().sort_values(by='avg_talking_duration_seconds').reset_index(drop=True))
+        ).reset_index().sort_values(by='total_answered_calls').reset_index(drop=True))
     
+
+        # =========================
+        # === lead calls count ===
+        # =========================
+        # each call more than 60 seconds of duration(bettween connect evenv and COMPLETECALLERor COMPLETEAGENT) is lead call
+        st.header("تعداد تماس های لید(بیشتر از ۶۰ ثانیه)")
+        
+        lead_data = []
+
+        for callid in calls_df['callid'].unique():
+            callid_rows = calls_df[calls_df['callid'] == callid]
+            enter_queue_row = callid_rows[callid_rows['event'] == 'ENTERQUEUE']
+            connect_time_row = callid_rows[callid_rows['event'] == 'CONNECT']
+            disconnect_time_row = callid_rows[callid_rows['event'].isin(['COMPLETECALLER', 'COMPLETEAGENT'])]
+            if not connect_time_row.empty and not disconnect_time_row.empty:
+                connect_time = pd.to_datetime(connect_time_row.iloc[0]['time'])
+                disconnect_time = pd.to_datetime(disconnect_time_row.iloc[0]['time'])
+                duration = (disconnect_time - connect_time).total_seconds()
+                phone = enter_queue_row.iloc[0]['phone_number']
+                if duration >= 60:
+                    lead_data.append({
+                        'callid': callid,
+                        'date': connect_time.date(),
+                        'agent': connect_time_row.iloc[0]['agent'],
+                        'duration_seconds': duration,
+                        'phone_number': phone
+                    })
+        lead_df = pd.DataFrame(lead_data)
+        if lead_df.empty:
+            st.warning("هیچ داده‌ای برای نمایش تعداد تماس‌های لید وجود ندارد با فیلترهای انتخاب شده.")
+            return
+        
+        cols = st.columns(2)
+        with cols[0]:
+            st.metric("تعداد کل تماس‌های لید", lead_df['phone_number'].nunique())
+        with cols[1]:
+            st.metric('میانگین تعداد تماس‌های لید در روز', round(lead_df['phone_number'].nunique() / ((end_date - start_date).days + 1), 2))
+        
+        with st.expander("جزئیات تماس های لید"):
+            st.dataframe(lead_df.sort_values(by='duration_seconds', ascending=False).reset_index(drop=True))
+
+        # lead per day
+        fig = px.bar(
+            lead_df.groupby('date').agg(total_lead_calls=('phone_number', 'nunique')).reset_index(),
+            x='date',
+            y='total_lead_calls',
+            title='تعداد تماس‌های لید در روز'
+        )
+        fig.update_layout(
+            xaxis_title='تاریخ',
+            yaxis_title='تعداد تماس‌های لید',
+            title_x=0.85,
+            xaxis={'side': 'bottom'},
+            yaxis={'side': 'right'},
+            font=dict(family="IranSans", size=14),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+            
+
 def load_team_manager():
     st.write("Team Manager content goes here.")
-
-    # manager_teams = [x.strip() for x in st.session_state.userdata['team'].split('|')]
-
-    # manager_members = st.session_state.users[
-    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    # ]['name'].unique().tolist()
-
-    # shifts = st.session_state.users[
-    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    # ]['shift'].apply(lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist()
-
-
-    # #  filters
-    # col1, col2, col3, col4, col5 = st.columns(5)
-    # with col1:
-    #     start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    # with col2:
-    #     end_date = st.date_input("End date", value=pd.to_datetime("today"))
-    # with col3:
-    #     team = st.selectbox("تیم", options=['All'] + manager_teams)
-    # with col4:
-    #     shift = st.selectbox("شیفت", options=['All'] + shifts)
-    # with col5:
-    #     expert = st.selectbox("کارشناس", options=["All"] + manager_members)
-
 
 def load_supervisor():
     st.write("Supervisor content goes here.")

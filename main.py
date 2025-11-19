@@ -36,30 +36,7 @@ def main():
     
     else:
         st.success(f"شما با موفقیت وارد شدید. خوش آمدید، {st.session_state.userdata['name']}!")
-        # role = st.session_state.userdata['role']
 
-        # if role in ['admin', 'qc manager']:
-        #     #  filters
-        #     col1, col2, col3, col4, col5 = st.columns(5)
-        #     with col1:
-        #         start_date = st.date_input("Start date", value=pd.to_datetime("2022-01-01"))
-        #     with col2:
-        #         end_date = st.date_input("End date", value=pd.to_datetime("today"))
-        #     with col3:
-        #         team = st.selectbox("تیم", options=st.session_state.users['team']
-        #                             .apply(lambda x: x.split('|')).explode().unique().tolist())
-        #     with col4:
-        #         shift = st.selectbox("شیفت", options=['همه'] + [x for x in st.session_state.users['shift'
-        #                                         ].apply(lambda x: x.split('|')).explode().unique().tolist() if x != '-'])
-        #     with col5:
-        #         expert = st.selectbox("کارشناس", options=["همه"] + st.session_state.users[
-        #             st.session_state.users['role'].str.contains('expert')
-        #         ]['name'].tolist())
-        
-        # elif role == 'team manger':
-        #     pass  # to be implemented
-        # elif role == 'expert':
-        #     pass  # to be implemented
 
 if __name__ == "__main__":
     main()

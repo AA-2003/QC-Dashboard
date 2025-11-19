@@ -29,13 +29,13 @@ def main():
     """
     """
     st.set_page_config(
-        page_title="صفحه ۱",
+        page_title="in&out",
         layout="wide",
         initial_sidebar_state="auto"
     )
     apply_custom_css()
 
-    st.title("صفحه ۱")
+    st.title("ورود و خروج کارشناسان")
 
     render_sidebar()
 
@@ -140,16 +140,6 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
         engine_string = f"mysql+pymysql://{st.secrets['VOIP_DB']['user']}:{st.secrets['VOIP_DB']['password']}@{st.secrets['VOIP_DB']['host']}/{st.secrets['VOIP_DB']['database']}"
         login_logout_df = execute_query(query_formatted, engine_string)
 
-        with st.expander("ورود و خروج کارشناسان"):
-            for voip_id in login_logout_df.sort_values(by='time', ascending=False)['agent'].unique():
-                member_name = filtered_members[
-                    filtered_members['voip_id'].apply(lambda x: voip_id.replace('Local/', '').replace('@from-queue', '') in [y.strip() for y in str(x).split('|')])
-                ]['name'].values
-                if member_name.size > 0:
-                    st.subheader(f"کارشناس: {member_name[0]} ({voip_id.replace('Local/', '').replace('@from-queue', '')})")
-                member_events = login_logout_df[login_logout_df['agent'] == voip_id].sort_values(by='time', ascending=False).reset_index(drop=True)
-                st.dataframe(member_events.sort_values(by='time', ascending=False).reset_index(drop=True))
-
         # =======================
         # === experts in line ===
         # =======================
@@ -175,8 +165,23 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
                 if not member_events.empty and member_events.iloc[0]['event'] == 'ADDMEMBER':
                     in_line_experts.add(f"{member_name[0]} ({voip_id.replace('Local/', '').replace('@from-queue', '')})")
 
-        for expert in in_line_experts:
-            st.write(expert)
+        # display results in good way
+        if in_line_experts:
+            st.dataframe(pd.DataFrame(list(in_line_experts), columns=['کارشناسان در خط']))
+        else:
+            st.write("هیچ کارشناس فعالی در خط وجود ندارد.")
+
+        
+        with st.expander("ورود و خروج کارشناسان"):
+            for voip_id in login_logout_df.sort_values(by='time', ascending=False)['agent'].unique():
+                member_name = filtered_members[
+                    filtered_members['voip_id'].apply(lambda x: voip_id.replace('Local/', '').replace('@from-queue', '') in [y.strip() for y in str(x).split('|')])
+                ]['name'].values
+                if member_name.size > 0:
+                    st.subheader(f"کارشناس: {member_name[0]} ({voip_id.replace('Local/', '').replace('@from-queue', '')})")
+                member_events = login_logout_df[login_logout_df['agent'] == voip_id].sort_values(by='time', ascending=False).reset_index(drop=True)
+                st.dataframe(member_events.sort_values(by='time', ascending=False).reset_index(drop=True))
+
 
         # ===========================
         # === out time per expert ===
@@ -184,6 +189,7 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
 
         st.subheader("مدت زمان خارج از خط هر کارشناس")
 
+        out_time_results = []
         for voip_id in login_logout_df['agent'].unique():
             member_name = filtered_members[
                 filtered_members['voip_id'].apply(lambda x: voip_id.replace('Local/', '').replace('@from-queue', '') in [y.strip() for y in str(x).split('|')])
@@ -209,38 +215,27 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
                             # less than 4 hours check
                             if (in_time - out_time) < pd.Timedelta(hours=4): 
                                 total_out_time += (in_time - out_time)
-                st.write(f"کارشناس: {member_name[0]} ({voip_id.replace('Local/', '').replace('@from-queue', '')}) - زمان خارج از خط: {total_out_time}")
 
-
-        # ==========================
-        # ===== 
+                out_time_results.append({
+                    'member_name': member_name[0],
+                    'voip_id': voip_id,
+                    # TypeError: isoformat() takes exactly 0 positional arguments (1 given)
+                    # i want in this foramt "HH:MM:SS"
+                    'total_out_time': total_out_time.components.hours * 3600 + total_out_time.components.minutes * 60 + total_out_time.components.seconds if total_out_time >= pd.Timedelta(0) else pd.Timedelta(0)
+                })
+        out_time_results_df  = pd.DataFrame({
+            'نام کارشناس': [res['member_name'] for res in out_time_results],
+            'VOIP ID': [res['voip_id'] for res in out_time_results],
+            'مدت زمان خارج از خط (ثانیه)': [res['total_out_time'] for res in out_time_results],
+        })
+        
+        out_time_results_df['مدت زمان خارج از خط'] = out_time_results_df['مدت زمان خارج از خط (ثانیه)'].apply(
+            lambda x: str(pd.Timedelta(seconds=x))
+        )
+        st.dataframe(out_time_results_df.sort_values(by='مدت زمان خارج از خط (ثانیه)', ascending=False).reset_index(drop=True))
+            
 def load_team_manager():
     st.write("Team Manager content goes here.")
-
-    # manager_teams = [x.strip() for x in st.session_state.userdata['team'].split('|')]
-
-    # manager_members = st.session_state.users[
-    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    # ]['name'].unique().tolist()
-
-    # shifts = st.session_state.users[
-    #     st.session_state.users['team'].apply(lambda x: any(team in [y.strip() for y in x.split('|')] for team in manager_teams))
-    # ]['shift'].apply(lambda x: [y.strip() for y in x.split('|')]).explode().unique().tolist()
-
-
-    # #  filters
-    # col1, col2, col3, col4, col5 = st.columns(5)
-    # with col1:
-    #     start_date = st.date_input("Start date", value=pd.to_datetime("today") - pd.Timedelta(days=1))
-    # with col2:
-    #     end_date = st.date_input("End date", value=pd.to_datetime("today"))
-    # with col3:
-    #     team = st.selectbox("تیم", options=['All'] + manager_teams)
-    # with col4:
-    #     shift = st.selectbox("شیفت", options=['All'] + shifts)
-    # with col5:
-    #     expert = st.selectbox("کارشناس", options=["All"] + manager_members)
-
 
 def load_supervisor():
     st.write("Supervisor content goes here.")
@@ -248,4 +243,4 @@ def load_supervisor():
 def load_expert():
     st.write("Expert content goes here.")
 
-main()  
+main()
