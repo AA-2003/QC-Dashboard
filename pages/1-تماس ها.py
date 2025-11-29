@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from utils.customCss import apply_custom_css
 from utils.sidebar import render_sidebar
 from utils.logger import log_event
+from utils.auth import authenticate
 
 # CONFIG
 CONFIG = {
@@ -25,20 +26,22 @@ def execute_query(query_formatted, engine_string) -> pd.DataFrame:
 
 def main():
     """
+    main function to render the calls page
     """
     st.set_page_config(
-        page_title="صفحه ۱",
+        page_title="تماس ها",
         layout="wide",
         initial_sidebar_state="auto"
     )
     apply_custom_css()
 
-    st.title("صفحه ۱")
-
+    st.title("تماس ها")
+    
     render_sidebar()
 
     if not st.session_state.get('logged_in', False):
         st.warning("لطفاً برای دسترسی به این صفحه وارد شوید.")
+        authenticate()
         return
     else:
         role = st.session_state.userdata['role']
@@ -81,10 +84,7 @@ def load_admin():
 
         submitted = st.form_submit_button("اعمال فیلترها")
 
-    if submitted:
-        log_event(st.session_state.userdata['name'], "apply_filters", f"""User {st.session_state.userdata['name']} applied filters on Admin page.
-start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, expert: {expert}.""")
-        
+    if submitted:        
         # apply filters
         filtered_members = st.session_state.users.copy()
         if team != 'All':
@@ -117,23 +117,25 @@ start_date: {start_date}, end_date: {end_date}, team: {team}, shift: {shift}, ex
         # ========================== 
         # ====call count per day====
         # ==========================
-        
-        # query
-        query = """
-SELECT
-    callid, time, data2 as phone_number, agent, event
-FROM queue_log
-WHERE
-    DATE(time) BETWEEN '{start_date}' AND '{end_date}'
-    AND queuename IN {queues}
-    AND callid IN(
-        SELECT DISTINCT(callid) FROM queue_log
-        WHERE data2 not IN {internal_numbers_voip}
-        AND agent IN {filtered_members_voip_}
-        AND event not IN ('DID', '')
-    )
-        """
-        query_formatted = query.format(
+        call_count_per_day_query = """
+    SELECT
+        DATE(time) as call_date,
+        COUNT(DISTINCT data2) as total_calls
+    FROM queue_log
+    WHERE
+        DATE(time) BETWEEN '{start_date}' AND '{end_date}'
+        AND queuename IN {queues}
+        AND event = 'ENTERQUEUE'
+        AND callid IN(
+            SELECT DISTINCT(callid) FROM queue_log
+            WHERE data2 NOT IN {internal_numbers_voip}
+            AND agent IN {filtered_members_voip_}
+            AND event not IN ('DID', '')
+        )
+    GROUP BY DATE(time)
+    ORDER BY call_date
+"""
+        call_count_per_day_query = call_count_per_day_query.format(
             queues=tuple(CONFIG['queues']),
             start_date=start_date,
             end_date=end_date,
@@ -142,30 +144,32 @@ WHERE
         )
 
         engine_string = f"mysql+pymysql://{st.secrets['VOIP_DB']['user']}:{st.secrets['VOIP_DB']['password']}@{st.secrets['VOIP_DB']['host']}/{st.secrets['VOIP_DB']['database']}"
-        calls_df = execute_query(query_formatted, engine_string)
-
-        # plotting
-        if calls_df.empty:
+        call_count_per_day_df = execute_query(call_count_per_day_query, engine_string)
+        
+        if call_count_per_day_df.empty:
             st.warning("هیچ داده‌ای برای نمایش وجود ندارد با فیلترهای انتخاب شده.")
             return
-                
-        calls_df['call_date'] = pd.to_datetime(calls_df['time']).dt.date
-        call_counts_agg = calls_df[calls_df['event'] == 'ENTERQUEUE'].groupby(
-            ['call_date']).agg(total_calls=('phone_number', 'nunique')).reset_index()
-        call_counts_agg = call_counts_agg.set_index('call_date')
-
+        
+        # plotting
+        st.header("تعداد تماس‌ها")
+        
         cols = st.columns(2)
         with cols[0]:
-            st.metric("تعداد کل تماس‌ها", call_counts_agg['total_calls'].sum())
+            st.metric(
+                label="تعداد تماس‌های یکتا",
+                value=call_count_per_day_df['total_calls'].sum(),
+            )
         with cols[1]:
-            st.metric("میانگین تماس‌ها در روز", round(call_counts_agg['total_calls'].mean(), 2))
+            st.metric(
+                label="میانگین تماس‌های یکتا در روز",
+                value=round(call_count_per_day_df['total_calls'].mean(), 0),
+            )
 
         all_dates = pd.date_range(start=start_date, end=end_date)
-        call_counts_agg = call_counts_agg.reindex(all_dates, fill_value=0)
-        call_counts_agg.index.name = 'call_date'
-
+        call_count_per_day_df = call_count_per_day_df.set_index('call_date').reindex(all_dates, fill_value=0)
+        call_count_per_day_df.index.name = 'call_date'
         fig = px.line(
-            call_counts_agg, x=call_counts_agg.index,
+            call_count_per_day_df, x=call_count_per_day_df.index,
             y='total_calls', title='تعداد تماس‌ها در روز',
             markers=True, 
             line_shape='spline',
@@ -179,43 +183,49 @@ WHERE
             yaxis={'side': 'right'},
             font=dict(family="IranSans", size=14),
         )
-        st.plotly_chart(fig, width="stretch")
-        
-        with st.expander("جزئیات تماس ها"):
-            st.dataframe(calls_df.sort_values(by='time', ascending=False))
-        
-        # st.write(calls_df['event'].unique())
+        st.plotly_chart(fig, use_container_width=True)
 
         # ============================
         # == avg duration to answer ==
         # ============================
 
-        st.header("مدت زمان متوسط پاسخگویی برای هر کارشناس")
-
-        avg_answer_df = calls_df.groupby('callid')
-
-        avg_answer_data = []
-
-        for grouped_callid, group in avg_answer_df:
-            enterqueue_times = group[group['event'] == 'ENTERQUEUE']['time'].sort_values().tolist()
-            leavequeue_times = group[group['event'] == 'CONNECT']['time'].sort_values().tolist()
-            agent = group[group['event'] == 'CONNECT']['agent'].sort_values().tolist()
-            if enterqueue_times and leavequeue_times:
-                enter_time = pd.to_datetime(enterqueue_times[0])
-                leave_time = pd.to_datetime(leavequeue_times[0])
-                duration = (leave_time - enter_time).total_seconds()
-                avg_answer_data.append({
-                    'callid': grouped_callid,
-                    'answer_duration_seconds': duration,
-                    'agent': agent[0]
-                })
-        avg_answer_df_final = pd.DataFrame(avg_answer_data)
-        
-        if avg_answer_df_final.empty:
+        avg_duration_query = """
+    SELECT
+        q.callid,
+        MIN(CASE WHEN q.event = 'ENTERQUEUE' THEN q.time END) AS enter_time,
+        MIN(CASE WHEN q.event = 'CONNECT' THEN q.time END) AS connect_time,
+        MIN(CASE WHEN q.event = 'CONNECT' THEN q.agent END) AS agent
+    FROM queue_log q
+    WHERE
+        DATE(q.time) BETWEEN '{start_date}' AND '{end_date}'
+        AND q.queuename IN {queues}
+        AND q.callid IN(
+            SELECT DISTINCT(callid) FROM queue_log
+            WHERE data2 NOT IN {internal_numbers_voip}
+            AND agent IN {filtered_members_voip_}
+            AND event not IN ('DID', '')
+        )
+    GROUP BY q.callid
+    HAVING enter_time IS NOT NULL AND connect_time IS NOT NULL
+"""
+        avg_duration_query = avg_duration_query.format(
+            queues=tuple(CONFIG['queues']),
+            start_date=start_date,
+            end_date=end_date,
+            internal_numbers_voip=tuple(internal_numbers_voip),
+            filtered_members_voip_=tuple(filtered_members_voip_),
+        )
+        avg_duration_df = execute_query(avg_duration_query, engine_string)  
+        if avg_duration_df.empty:
             st.warning("هیچ داده‌ای برای نمایش مدت زمان متوسط پاسخگویی وجود ندارد با فیلترهای انتخاب شده.")
             return
-
-        st.dataframe(avg_answer_df_final.groupby('agent').agg(
+        
+        # plotting
+        st.header("مدت زمان متوسط پاسخگویی برای هر کارشناس")
+        avg_duration_df['enter_time'] = pd.to_datetime(avg_duration_df['enter_time'])
+        avg_duration_df['connect_time'] = pd.to_datetime(avg_duration_df['connect_time'])
+        avg_duration_df['answer_duration_seconds'] = (avg_duration_df['connect_time'] - avg_duration_df['enter_time']).dt.total_seconds()
+        st.dataframe(avg_duration_df.groupby('agent').agg(
             avg_answer_duration_seconds=('answer_duration_seconds', 'mean'),
             total_answered_calls=('callid', 'nunique')
         ).reset_index().sort_values(by='avg_answer_duration_seconds').reset_index(drop=True))
@@ -223,83 +233,116 @@ WHERE
         # ==========================
         # ==== avg talking time ====
         # ==========================
-        st.header("مدت زمان متوسط مکالمه برای هر کارشناس")
-
-        avg_talking_df = calls_df.groupby('callid')
-        avg_talking_data = []
-        for grouped_callid, group in avg_talking_df:
-            connect_times = group[group['event'] == 'CONNECT']['time'].sort_values().tolist()
-            disconnect_times = group[group['event'].isin(['COMPLETECALLER', 'COMPLETEAGENT'])]['time'].sort_values().tolist()
-            agent = group[group['event'] == 'CONNECT']['agent'].sort_values().tolist()
-            if connect_times and disconnect_times:
-                connect_time = pd.to_datetime(connect_times[0])
-                disconnect_time = pd.to_datetime(disconnect_times[0])
-                duration = (disconnect_time - connect_time).total_seconds()
-                avg_talking_data.append({
-                    'callid': grouped_callid,
-                    'talking_duration_seconds': duration,
-                    'agent': agent[0]
-                })
-        
-        avg_talking_df_final = pd.DataFrame(avg_talking_data)
-        if avg_talking_df_final.empty:
+        avg_talking_query = """
+    SELECT
+        q.callid,
+        MIN(CASE WHEN q.event = 'CONNECT' THEN q.time END) AS connect_time,
+        MIN(CASE WHEN q.event IN ('COMPLETECALLER', 'COMPLETEAGENT') THEN q.time END) AS disconnect_time,
+        MIN(CASE WHEN q.event = 'CONNECT' THEN q.agent END) AS agent
+    FROM queue_log q
+    WHERE
+        DATE(q.time) BETWEEN '{start_date}' AND '{end_date}'
+        AND q.queuename IN {queues}
+        AND q.callid IN(
+            SELECT DISTINCT(callid) FROM queue_log
+            WHERE data2 NOT IN {internal_numbers_voip}
+            AND agent IN {filtered_members_voip_}
+            AND event not IN ('DID', '')   
+        )
+    GROUP BY q.callid
+    HAVING connect_time IS NOT NULL AND disconnect_time IS NOT NULL
+"""
+        avg_talking_query = avg_talking_query.format(
+            queues=tuple(CONFIG['queues']),
+            start_date=start_date,
+            end_date=end_date,
+            internal_numbers_voip=tuple(internal_numbers_voip),
+            filtered_members_voip_=tuple(filtered_members_voip_),
+        )
+        avg_talking_df = execute_query(avg_talking_query, engine_string)  
+        if avg_talking_df.empty:
             st.warning("هیچ داده‌ای برای نمایش مدت زمان متوسط مکالمه وجود ندارد با فیلترهای انتخاب شده.")
             return
-        st.dataframe(avg_talking_df_final.groupby('agent').agg(
+        # plotting
+        st.header("مدت زمان متوسط مکالمه برای هر کارشناس")
+        avg_talking_df['connect_time'] = pd.to_datetime(avg_talking_df['connect_time'])
+        avg_talking_df['disconnect_time'] = pd.to_datetime(avg_talking_df['disconnect_time'])
+        avg_talking_df['talking_duration_seconds'] = (avg_talking_df['disconnect_time'] - avg_talking_df['connect_time']).dt.total_seconds()
+        st.dataframe(avg_talking_df.groupby('agent').agg(
             avg_talking_duration_seconds=('talking_duration_seconds', 'mean'),
             total_answered_calls=('callid', 'nunique')
         ).reset_index().sort_values(by='total_answered_calls').reset_index(drop=True))
-    
 
         # =========================
-        # === lead calls count ===
+        # === lead calls count ====
         # =========================
-        # each call more than 60 seconds of duration(bettween connect evenv and COMPLETECALLERor COMPLETEAGENT) is lead call
-        st.header("تعداد تماس های لید(بیشتر از ۶۰ ثانیه)")
-        
-        lead_data = []
+        leads_query = """
+    SELECT
+        callid,
+        MIN(CASE WHEN event = 'ENTERQUEUE' THEN data2 END) AS phone_number,
+        MIN(CASE WHEN event = 'CONNECT' THEN time END) AS connect_time,
+        MIN(CASE WHEN event IN ('COMPLETECALLER', 'COMPLETEAGENT') THEN time END) AS disconnect_time,
+        MIN(CASE WHEN event = 'CONNECT' THEN agent END) AS agent
+    FROM queue_log
+    WHERE
+        DATE(time) BETWEEN '{start_date}' AND '{end_date}'
+        AND queuename IN {queues}
+        AND callid IN(
+            SELECT DISTINCT(callid) FROM queue_log
+            WHERE data2 NOT IN {internal_numbers_voip}
+            AND agent IN {filtered_members_voip_}
+            AND event not IN ('DID', '')   
+        )
+    GROUP BY callid
+    HAVING connect_time IS NOT NULL AND disconnect_time IS NOT NULL"""
 
-        for callid in calls_df['callid'].unique():
-            callid_rows = calls_df[calls_df['callid'] == callid]
-            enter_queue_row = callid_rows[callid_rows['event'] == 'ENTERQUEUE']
-            connect_time_row = callid_rows[callid_rows['event'] == 'CONNECT']
-            disconnect_time_row = callid_rows[callid_rows['event'].isin(['COMPLETECALLER', 'COMPLETEAGENT'])]
-            if not connect_time_row.empty and not disconnect_time_row.empty:
-                connect_time = pd.to_datetime(connect_time_row.iloc[0]['time'])
-                disconnect_time = pd.to_datetime(disconnect_time_row.iloc[0]['time'])
-                duration = (disconnect_time - connect_time).total_seconds()
-                phone = enter_queue_row.iloc[0]['phone_number']
-                if duration >= 60:
-                    lead_data.append({
-                        'callid': callid,
-                        'date': connect_time.date(),
-                        'agent': connect_time_row.iloc[0]['agent'],
-                        'duration_seconds': duration,
-                        'phone_number': phone
-                    })
-        lead_df = pd.DataFrame(lead_data)
-        if lead_df.empty:
-            st.warning("هیچ داده‌ای برای نمایش تعداد تماس‌های لید وجود ندارد با فیلترهای انتخاب شده.")
+        leads_query = leads_query.format(
+            queues=tuple(CONFIG['queues']),
+            start_date=start_date,
+            end_date=end_date,
+            internal_numbers_voip=tuple(internal_numbers_voip),
+            filtered_members_voip_=tuple(filtered_members_voip_),
+        )
+        leads_df = execute_query(leads_query, engine_string)  
+        if leads_df.empty:
+            st.warning("هیچ داده‌ای برای نمایش تماس‌های لید وجود ندارد با فیلترهای انتخاب شده.")
             return
-        
+        leads_df['connect_time'] = pd.to_datetime(leads_df['connect_time'])
+        leads_df['disconnect_time'] = pd.to_datetime(leads_df['disconnect_time'])
+        leads_df['talking_duration_seconds'] = (leads_df['disconnect_time'] - leads_df['connect_time']).dt.total_seconds()
+
+        # if talking duration is more than 60 seconds, mark it as valid lead call
+        leads_df['is_valid_lead_call'] = leads_df['talking_duration_seconds'] > 60
+
+        filtered_leads_df = leads_df[leads_df['is_valid_lead_call']]
+
+        # metrics
         cols = st.columns(2)
         with cols[0]:
-            st.metric("تعداد کل تماس‌های لید", lead_df['phone_number'].nunique())
+            st.metric(
+                label="تعداد تماس‌های لید",
+                value=filtered_leads_df['phone_number'].nunique(),
+            )
         with cols[1]:
-            st.metric('میانگین تعداد تماس‌های لید در روز', round(lead_df['phone_number'].nunique() / ((end_date - start_date).days + 1), 2))
+            st.metric(
+                label="میانگین تعداد تماس‌های لید در روز",
+                value=round(filtered_leads_df['phone_number'].nunique() / (end_date - start_date).days, 0),
+            )
         
-        with st.expander("جزئیات تماس های لید"):
-            st.dataframe(lead_df.sort_values(by='duration_seconds', ascending=False).reset_index(drop=True))
+        st.header("تعداد تماس های لید به ازای هر روز")
+        leads_count_per_day_df = filtered_leads_df.groupby(filtered_leads_df['connect_time'].dt.date).agg(
+            total_lead_calls=('phone_number', 'nunique')
+        ).reset_index().rename(columns={'connect_time': 'date'})
 
-        # lead per day
-        fig = px.bar(
-            lead_df.groupby('date').agg(total_lead_calls=('phone_number', 'nunique')).reset_index(),
-            x='date',
-            y='total_lead_calls',
-            title='تعداد تماس‌های لید در روز'
+        fig = px.line(
+            leads_count_per_day_df, x='date', y='total_lead_calls',
+            title='تعداد تماس‌های لید در روز',
+            markers=True, 
+            line_shape='spline',
+            template='plotly_white'
         )
         fig.update_layout(
-            xaxis_title='تاریخ',
+            xaxis_title='تاریخ', 
             yaxis_title='تعداد تماس‌های لید',
             title_x=0.85,
             xaxis={'side': 'bottom'},
@@ -308,7 +351,10 @@ WHERE
         )
         st.plotly_chart(fig, use_container_width=True)
 
-            
+        with st.expander("نمایش جزئیات تماس‌های لید"):
+            st.dataframe(leads_df.sort_values(by='connect_time', ascending=False).reset_index(drop=True))
+
+
 
 def load_team_manager():
     st.write("Team Manager content goes here.")
@@ -318,7 +364,6 @@ def load_supervisor():
 
 def load_expert():
     st.write("Expert content goes here.")
-
 
 
 main()
